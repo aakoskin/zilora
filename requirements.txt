@@ -1,0 +1,5 @@
+numpy==2.4.4
+packaging
+safetensors==0.6.2
+torch==2.8.0
+tqdm

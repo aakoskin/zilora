@@ -1,0 +1,38 @@
+ZILORA
+======
+ZILORA is a simple tool (under 500 lines) for Z-Image Base LoRA merging and
+extraction. It works with 32 GB RAM (or 16 GB RAM and 16 GB swap). During the
+LoRA extract, CUDA and around 2 GB VRAM is used. The BF16 and CUDA are
+intentionally fixed as that's the hardware I use at the moment.
+  The tool is a command-line tool for Linux and Python environments.
+
+USAGE
+-----
+The tool supports dump, extract and merge operations. Run it with
+"python zilora.py -h" to get the internal help text which is the main
+documentation.
+
+LoRA FORMATS
+------------
+The LoRA scene is a mess! This tool supports some LoRAs I've encountered, with
+the following key variations:
+  adaLN_modulation.0
+  attention.out
+  attention.qkv
+  attention.to_out.0
+  attention.to_q[qkv]
+  feed_forward.w[123]
+It assumes "lora_A" and "lora_B", and "alpha" is used if present but not
+written.
+  The only "officially" supported format is the "diffusers" one produced by
+musubi-tuner. Other formats mainly work just by accident. The output format is
+intended to be compatible with both musubi-tuner and InvokeAI.
+
+CREDITS
+-------
+The original merging and extraction code was forked from
+<https://github.com/GraftingRayman/ComfyUI-ZImage-Bake-Extract>.
+
+LICENSE
+-------
+Apache-2.0 (the original license of ComfyUI-ZImage-Bake-Extract)
