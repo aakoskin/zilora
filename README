@@ -1,9 +1,9 @@
 ZILORA
 ======
-ZILORA is a simple tool (under 500 lines) for Z-Image Base LoRA merging and
-extraction. It works with 32 GB RAM (or 16 GB RAM and 16 GB swap). During the
-LoRA extract, CUDA and around 2 GB VRAM is used. The BF16 and CUDA are
-intentionally fixed as that's the hardware I use at the moment.
+ZILORA is a simple tool (under 650 lines) for FLUX.2 Klein 4B or Z-Image Base
+LoRA merging and extraction. It works with 32 GB RAM (or 16 GB RAM and 16 GB
+swap). During the LoRA extract, CUDA and around 2 GB VRAM is used. The BF16 and
+CUDA are intentionally fixed as that's the hardware I use at the moment.
   The tool is a command-line tool for Linux and Python environments.
 
 USAGE
@@ -15,7 +15,7 @@ documentation.
 LoRA FORMATS
 ------------
 The LoRA scene is a mess! This tool supports some LoRAs I've encountered, with
-the following key variations:
+the following Z-Image key variations:
   adaLN_modulation.0
   attention.out
   attention.qkv
@@ -23,10 +23,11 @@ the following key variations:
   attention.to_q[qkv]
   feed_forward.w[123]
 It assumes "lora_A" and "lora_B", and "alpha" is used if present but not
-written.
-  The only "officially" supported format is the "diffusers" one produced by
-musubi-tuner. Other formats mainly work just by accident. The output format is
-intended to be compatible with both musubi-tuner and InvokeAI.
+written. FLUX.2 Klein 4B is simpler as there seems to be only a single format
+around.
+  Only "officially" supported formats are ones produced by musubi-tuner. Other
+formats mainly work just by accident. The output format is intended to be
+compatible with both musubi-tuner and InvokeAI.
 
 CREDITS
 -------

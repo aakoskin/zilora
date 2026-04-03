@@ -32,11 +32,11 @@ def check_key(key, which, model):
 def check_base(layer, postfix, model):
     return check_key(f'layers.{layer}.{postfix}', 'base', model)
 
-def get_lora(prefix, lora_weights, processed):
-    down_key = check_key(f'{prefix}.lora_A.weight', 'LoRA', lora_weights)
+def get_lora(prefix, lora_weights, processed, down, up):
+    down_key = check_key(f'{prefix}.lora_{down}.weight', 'LoRA', lora_weights)
     if down_key is None:
         return None, None
-    up_key = f'{prefix}.lora_B.weight'
+    up_key = f'{prefix}.lora_{up}.weight'
     lora_down = lora_weights[down_key].float()
     lora_up = lora_weights[up_key].float()
     processed.add(down_key)
@@ -46,12 +46,17 @@ def get_lora(prefix, lora_weights, processed):
     if alpha_key in lora_weights:
         lora_alpha = lora_weights[alpha_key].item()
         processed.add(alpha_key)
-        scaling = lora_alpha / rank
+        scaling = lora_alpha / lora_down.shape[0]
     else:
         scaling = 1.0
-    rank = lora_down.shape[0]
     lora_matrix = lora_up @ lora_down
     return lora_matrix, scaling
+
+def get_flux_lora(prefix, lora_weights, processed):
+    return get_lora(prefix, lora_weights, processed, 'down', 'up')
+
+def get_zi_lora(prefix, lora_weights, processed):
+    return get_lora(prefix, lora_weights, processed, 'A', 'B')
 
 def load_weights(file, name):
     print(f"Loading {name}: {os.path.basename(file)}", end='')
@@ -59,7 +64,88 @@ def load_weights(file, name):
     print(f" ({len(weights)} weights)")
     return weights
 
-def bake_lora(base_path, lora_path, output_path, alpha=1.0):
+def bake_flux_lora(base_path, lora_path, output_path, alpha=1.0):
+    start_time = time.time()
+    base_weights = load_weights(base_path, "the base model")
+    lora_weights = load_weights(lora_path, "the LoRA      ")
+    processed = set()
+    banner(f'Merging LoRA weights {alpha}')
+    for key in tqdm(re_keys('^lora_unet_single_blocks', lora_weights.keys()),
+                    desc='Single blocks'):
+        if '.lora_up.weight' in key:
+            prefix = key.replace('.lora_up.weight', '')
+            match = re.search(r'single_blocks_(\d+)_linear(\d+)', prefix)
+            if not match:
+                continue
+            layer_num = match.group(1)
+            ln = match.group(2)
+            base_key = check_key(
+               f'single_blocks.{layer_num}.linear{ln}.weight',
+               'base',
+               base_weights)
+            if base_key is None:
+                continue
+            lora_matrix, scaling = get_flux_lora(prefix,
+                                                 lora_weights,
+                                                 processed)
+            if lora_matrix is None:
+                continue
+
+            # Merge: W' = W + BA * (alpha/rank)
+            base_weights[base_key] = base_weights[base_key].float() + \
+                                     lora_matrix * scaling * alpha
+            base_weights[base_key] = base_weights[base_key].bfloat16()
+
+    for key in tqdm(re_keys('^lora_unet_double_blocks', lora_weights.keys()),
+                    desc='Double blocks'):
+        if '.lora_up.weight' in key:
+            prefix = key.replace('.lora_up.weight', '')
+            match = re.search(
+                r'double_blocks_(\d+)_((img|txt)_[^_]+)_(.+)(_(\d+))?',
+                prefix
+            )
+            if not match:
+                continue
+            layer_num = match.group(1)
+            k1 = match.group(2)
+            k2 = match.group(4)
+            if k2 == 'mlp':
+                k2 += match.group(6)
+            base_key = check_key(
+                f'double_blocks.{layer_num}.{k1}.{k2}.weight',
+                'base',
+                base_weights
+            )
+            if base_key is None:
+                continue
+            lora_matrix, scaling = get_flux_lora(prefix,
+                                                 lora_weights,
+                                                 processed)
+            if lora_matrix is None:
+                continue
+
+            # Merge: W' = W + BA * (alpha/rank)
+            base_weights[base_key] = base_weights[base_key].float() + \
+                                     lora_matrix * scaling * alpha
+            base_weights[base_key] = base_weights[base_key].bfloat16()
+
+    for k in lora_weights:
+        if k not in processed:
+            print(f"Unprocessed LoRA key: {k}")
+    del lora_weights
+    final_weights = {}
+
+    # Copy all remaining weights
+    for key in tqdm(list(base_weights.keys()), desc='  Final sweep'):
+        final_weights[key] = base_weights[key].bfloat16()
+        del base_weights[key]
+
+    # Save merged model
+    banner(f'Saving the model {os.path.basename(output_path)}')
+    save_file(final_weights, output_path)
+    report_time(start_time)
+
+def bake_zi_lora(base_path, lora_path, output_path, alpha=1.0):
     start_time = time.time()
     base_weights = load_weights(base_path, "the base model")
     lora_weights = load_weights(lora_path, "the LoRA      ")
@@ -78,7 +164,7 @@ def bake_lora(base_path, lora_path, output_path, alpha=1.0):
                                   base_weights)
             if base_key is None:
                 continue
-            lora_matrix, scaling = get_lora(prefix, lora_weights, processed)
+            lora_matrix, scaling = get_zi_lora(prefix, lora_weights, processed)
             if lora_matrix is None:
                 continue
 
@@ -99,7 +185,7 @@ def bake_lora(base_path, lora_path, output_path, alpha=1.0):
                                   base_weights)
             if base_key is None:
                 continue
-            lora_matrix, scaling = get_lora(prefix, lora_weights, processed)
+            lora_matrix, scaling = get_zi_lora(prefix, lora_weights, processed)
             if lora_matrix is None:
                 continue
             base_weights[base_key] = base_weights[base_key].float() + \
@@ -124,7 +210,7 @@ def bake_lora(base_path, lora_path, output_path, alpha=1.0):
                     continue
                 base_weights[f'qkv_merged_{layer_num}'] = base_weights[base_key].float()
                 del base_weights[base_key]
-            lora_matrix, scaling = get_lora(prefix, lora_weights, processed)
+            lora_matrix, scaling = get_zi_lora(prefix, lora_weights, processed)
             if lora_matrix is None:
                 continue
 
@@ -167,7 +253,7 @@ def bake_lora(base_path, lora_path, output_path, alpha=1.0):
             if base_key is None:
                 continue
 
-            lora_matrix, scaling = get_lora(prefix, lora_weights, processed)
+            lora_matrix, scaling = get_zi_lora(prefix, lora_weights, processed)
             if lora_matrix is None:
                 continue
 
@@ -187,7 +273,7 @@ def bake_lora(base_path, lora_path, output_path, alpha=1.0):
                                   base_weights)
             if base_key is None:
                 continue
-            lora_matrix, scaling = get_lora(prefix, lora_weights, processed)
+            lora_matrix, scaling = get_zi_lora(prefix, lora_weights, processed)
             if lora_matrix is None:
                 continue
             base_weights[base_key] = base_weights[base_key].float() + \
@@ -217,6 +303,12 @@ def bake_lora(base_path, lora_path, output_path, alpha=1.0):
     save_file(final_weights, output_path)
     report_time(start_time)
 
+def bake_lora(type, base_path, lora_path, output_path, alpha=1.0):
+    if type == 'zimage':
+        bake_zi_lora(base_path, lora_path, output_path, alpha)
+    else:
+        bake_flux_lora(base_path, lora_path, output_path, alpha)
+
 def perform_svd(weight_diff, rank):
     # Perform SVD on the difference
     weight_diff = weight_diff.to('cuda')
@@ -239,7 +331,77 @@ def dump_weights(files):
         for k in weights.keys():
             print(f"{k}: {weights[k]}")
 
-def extract_lora(base_path, merged_path, output_path, rank=4):
+def extract_flux_lora(base_path, merged_path, output_path, rank=4):
+    start_time = time.time()
+    base_weights = load_weights(base_path, "the base model")
+    merged_weights = load_weights(merged_path, "merged model  ")
+
+    # Storage for extracted LoRA
+    lora_weights = {}
+
+    banner(f'Extracting the LoRA (rank={rank})')
+    src = r'single_blocks\.(\d+)\.linear(\d+)\.weight'
+    for base_key in tqdm(re_keys(src, base_weights.keys()),
+                         desc='Single blocks'):
+        match = re.search(src, base_key)
+        if not match:
+            continue
+        layer_num = match.group(1)
+        ln = match.group(2)
+        if base_key not in merged_weights:
+            continue
+        base_weight = base_weights[base_key].float()
+        merged_weight = merged_weights[base_key].float()
+        weight_diff = merged_weight - base_weight
+
+        # If difference is significant, extract LoRA
+        if torch.norm(weight_diff) > 1e-8:
+            lora_down, lora_up = perform_svd(weight_diff, rank)
+
+            # Store weights with EXACT SAME NAMING as LoRA file uses
+            prefix = f"lora_unet_single_blocks_{layer_num}_linear{ln}"
+            lora_weights[f"{prefix}.lora_down.weight"] = lora_down
+            lora_weights[f"{prefix}.lora_up.weight"] = lora_up
+            lora_weights[f"{prefix}.alpha"] = torch.tensor(rank,
+                                                           dtype=torch.bfloat16)
+
+    src = r'double_blocks\.(\d+)\.([^.]+).([^.]+)(\.(\d+))?\.weight'
+    for base_key in tqdm(re_keys(src, base_weights.keys()),
+                         desc='Double blocks'):
+        match = re.search(src, base_key)
+        if not match:
+            continue
+        layer_num = match.group(1)
+        k1 = match.group(2)
+        k2 = match.group(3)
+        n = match.group(5)
+        if k2 == 'mlp':
+            k2 += '_' + n
+        if base_key not in merged_weights:
+            continue
+        base_weight = base_weights[base_key].float()
+        merged_weight = merged_weights[base_key].float()
+        weight_diff = merged_weight - base_weight
+
+        # If difference is significant, extract LoRA
+        if torch.norm(weight_diff) > 1e-8:
+            lora_down, lora_up = perform_svd(weight_diff, rank)
+
+            # Store weights with EXACT SAME NAMING as LoRA file uses
+            prefix = f"lora_unet_double_blocks_{layer_num}_{k1}_{k2}"
+            lora_weights[f"{prefix}.lora_down.weight"] = lora_down
+            lora_weights[f"{prefix}.lora_up.weight"] = lora_up
+            lora_weights[f"{prefix}.alpha"] = torch.tensor(rank,
+                                                           dtype=torch.bfloat16)
+
+    if lora_weights:
+        banner(f'Saving {len(lora_weights)} LoRA weights to {os.path.basename(output_path)}')
+        save_file(lora_weights, output_path)
+    else:
+        print("No significant differences found.")
+    report_time(start_time)
+
+def extract_zi_lora(base_path, merged_path, output_path, rank=4):
     start_time = time.time()
     base_weights = load_weights(base_path, "the base model")
     merged_weights = load_weights(merged_path, "merged model  ")
@@ -371,6 +533,12 @@ def extract_lora(base_path, merged_path, output_path, rank=4):
         print("No significant differences found.")
     report_time(start_time)
 
+def extract_lora(type, base_path, merged_path, output_path, rank=4):
+    if type == 'zimage':
+        extract_zi_lora(base_path, merged_path, output_path, rank)
+    else:
+        extract_flux_lora(base_path, merged_path, output_path, rank)
+
 def check_file(what, file):
     if file is None or len(file) == 0:
         print(f"{what} needs to be provided")
@@ -394,7 +562,7 @@ def file_writeable(what, file):
     return True
 
 if __name__ == "__main__":
-    version = 'zilora v0.01'
+    version = 'zilora v0.02'
     parser = argparse.ArgumentParser(
         description=version, formatter_class=argparse.RawTextHelpFormatter
     )
@@ -417,6 +585,8 @@ merge   Merge a LoRA into the base model
                         default=16)
     parser.add_argument("--alpha", help="The weight of the merged LoRA",
                         type=float, default=1.0)
+    parser.add_argument("--type", help="The LoRA type", type=str,
+                        required=True, choices=['flux2klein4b', 'zimage'])
     args = parser.parse_args()
     banner(version)
     if args.command == 'dump':
@@ -428,10 +598,17 @@ merge   Merge a LoRA into the base model
           file_readable("Base model", args.base_model) and
           file_readable("Merged model", args.merged_model) and
           file_writeable("LoRA", args.lora)):
-        extract_lora(args.base_model, args.merged_model, args.lora,
+        extract_lora(args.type,
+                     args.base_model,
+                     args.merged_model,
+                     args.lora,
                      args.rank)
     elif (args.command == 'merge' and
           file_readable("Base model", args.base_model) and
           file_readable("LoRA", args.lora) and
           file_writeable("Merged model", args.merged_model)):
-        bake_lora(args.base_model, args.lora, args.merged_model, args.alpha)
+        bake_lora(args.type,
+                  args.base_model,
+                  args.lora,
+                  args.merged_model,
+                  args.alpha)
